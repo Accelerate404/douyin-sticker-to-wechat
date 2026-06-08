@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+
+# Downloaded stickers (runtime data)
+downloaded_stickers/
+
+# Debug screenshots
+debug/
+
+# Assets (UI templates, generated)
+assets/
+
+# Cookies / credentials
+douyin_cookies.json
+*.cookies
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
