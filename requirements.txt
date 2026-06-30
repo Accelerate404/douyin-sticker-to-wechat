@@ -5,3 +5,4 @@ pyperclip>=1.8.2
 Pillow>=10.0.0
 pygetwindow>=0.0.9
 pywin32>=306
+adbutils>=1.0.0

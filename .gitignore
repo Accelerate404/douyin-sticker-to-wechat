@@ -21,6 +21,9 @@ env/
 # Logs
 *.log
 
+# Debug output
+page_dump.json
+
 # Downloaded stickers (runtime data)
 downloaded_stickers/
 

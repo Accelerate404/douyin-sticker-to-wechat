@@ -63,7 +63,7 @@ class StickerTransferApp:
 
         tk.Label(
             self.root,
-            text="步骤：打开浏览器登录 → 手动打开聊天表情面板(❤️) → 点击抓取 → 发送到微信",
+            text="步骤：打开浏览器 → 开始抓取(等待登录+手动打开表情面板) → 推送到手机",
             font=("Microsoft YaHei", 9), fg="gray",
         ).pack(pady=(0, 5))
 
@@ -84,12 +84,25 @@ class StickerTransferApp:
         )
         self.btn_scrape.pack(side=tk.LEFT, padx=5)
 
-        self.btn_send = tk.Button(
-            btn_frame, text="3. 发送到微信",
+        self.btn_push = tk.Button(
+            btn_frame, text="3. 推送到手机",
             font=("Microsoft YaHei", 11), width=18, height=2,
-            command=self._start_send, state=tk.DISABLED,
+            command=self._start_push, state=tk.DISABLED,
         )
-        self.btn_send.pack(side=tk.LEFT, padx=5)
+        self.btn_push.pack(side=tk.LEFT, padx=5)
+
+        debug_frame = tk.Frame(self.root)
+        debug_frame.pack(pady=2, fill=tk.X, padx=20)
+        self.btn_debug = tk.Button(
+            debug_frame, text="页面诊断",
+            font=("Microsoft YaHei", 9), width=12,
+            command=self._start_debug, state=tk.DISABLED,
+        )
+        self.btn_debug.pack(side=tk.LEFT)
+        tk.Label(
+            debug_frame, text="(如自动抓取失败，点此 dump 页面结构供分析)",
+            font=("Microsoft YaHei", 8), fg="gray",
+        ).pack(side=tk.LEFT, padx=5)
 
         sep = ttk.Separator(self.root, orient="horizontal")
         sep.pack(fill=tk.X, padx=20, pady=5)
@@ -140,11 +153,13 @@ class StickerTransferApp:
 
     def _set_running(self, running):
         self.is_running = running
-        state = tk.DISABLED if running else tk.NORMAL
-        self.btn_open.config(state=state if not self.scraper else tk.DISABLED)
-        self.btn_scrape.config(state=state if self.scraper else tk.DISABLED)
-        self.btn_send.config(
-            state=tk.DISABLED if running else (tk.NORMAL if self.sticker_paths else tk.DISABLED)
+        self.btn_open.config(state=tk.NORMAL if (not running and not self.scraper) else tk.DISABLED)
+        self.btn_scrape.config(state=tk.NORMAL if (not running and self.scraper) else tk.DISABLED)
+        self.btn_push.config(
+            state=tk.NORMAL if (not running and self.sticker_paths) else tk.DISABLED
+        )
+        self.btn_debug.config(
+            state=tk.NORMAL if (not running and self.scraper) else tk.DISABLED
         )
         if running:
             self.progress.start(10)
@@ -169,6 +184,7 @@ class StickerTransferApp:
                 if ok:
                     self.root.after(0, lambda: self.btn_open.config(state=tk.DISABLED))
                     self.root.after(0, lambda: self.btn_scrape.config(state=tk.NORMAL))
+                    self.root.after(0, lambda: self.btn_debug.config(state=tk.NORMAL))
                     self.root.after(0, self.status_var.set, "已连接 Edge，等待操作")
                 else:
                     self.root.after(0, self.status_var.set, "连接失败")
@@ -207,28 +223,59 @@ class StickerTransferApp:
 
     def _update_send_button(self):
         if self.sticker_paths:
-            self.btn_send.config(state=tk.NORMAL)
+            self.btn_push.config(state=tk.NORMAL)
             self.count_var.set(f"{len(self.sticker_paths)} 个表情包")
 
-    # ========== 3. 发送到微信 ==========
-    def _start_send(self):
+    # ========== 3. 推送到手机 ==========
+    def _start_push(self):
         if self.is_running or not self.sticker_paths:
             return
         self._set_running(True)
-        self.status_var.set("正在发送到微信...")
+        self.status_var.set("正在推送到手机...")
 
         def run():
             try:
-                from wechat_importer import WeChatStickerImporter
-                importer = WeChatStickerImporter(
+                from sticker_converter import batch_convert
+                from adb_push import push_stickers_to_phone
+
+                # 先格式转换+压缩
+                self.root.after(0, self._log, "正在转换表情包格式...")
+                converted = batch_convert(
+                    self.sticker_paths,
                     on_progress=lambda msg: self.root.after(0, self._log, msg),
                 )
-                count = importer.run(self.sticker_paths, auto_save=False)
-                self.root.after(0, self._log, f"发送完成: {count} 个，请手动右键保存到表情")
-                self.root.after(0, self.status_var.set, "发送完成")
+                self.root.after(0, self._log, f"转换完成: {len(converted)} 个")
+
+                # 推送到手机
+                self.root.after(0, self._log, "正在连接手机...")
+                count = push_stickers_to_phone(
+                    converted,
+                    on_progress=lambda msg: self.root.after(0, self._log, msg),
+                )
+                self.root.after(0, self._log, f"推送完成: {count} 个")
+                self.root.after(0, self.status_var.set, "推送完成")
             except Exception as e:
                 self.root.after(0, self._log, f"错误: {e}")
-                self.root.after(0, self.status_var.set, "发送失败")
+                self.root.after(0, self.status_var.set, "推送失败")
+            finally:
+                self.root.after(0, self._set_running, False)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    # ========== 调试 ==========
+    def _start_debug(self):
+        if self.is_running or not self.scraper:
+            return
+        self._set_running(True)
+        self.status_var.set("正在诊断页面...")
+
+        def run():
+            try:
+                self._run_async(self.scraper.dump_page_structure())
+                self.root.after(0, self.status_var.set, "诊断完成，结果保存在 page_dump.json")
+            except Exception as e:
+                self.root.after(0, self._log, f"诊断错误: {e}")
+                self.root.after(0, self.status_var.set, "诊断失败")
             finally:
                 self.root.after(0, self._set_running, False)
 
@@ -252,6 +299,7 @@ class StickerTransferApp:
             self._log("已断开浏览器连接")
             self.btn_open.config(state=tk.NORMAL)
             self.btn_scrape.config(state=tk.DISABLED)
+            self.btn_debug.config(state=tk.DISABLED)
 
     def run(self):
         self.root.mainloop()

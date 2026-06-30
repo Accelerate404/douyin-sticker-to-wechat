@@ -35,5 +35,10 @@ HEADERS = {
     "Referer": "https://www.douyin.com/",
 }
 
+# ADB 配置
+ADB_PUSH_DIR = "/sdcard/DCIM/stickers"  # 推送到手机的目标目录
+ADB_RECONNECT_INTERVAL = 5  # 重连间隔(秒)
+ADB_RECONNECT_TIMEOUT = 30  # 重连超时(秒)
+
 # 日志级别
 LOG_LEVEL = "INFO"

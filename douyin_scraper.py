@@ -1,8 +1,6 @@
 """
 抖音表情包抓取模块
-连接 Edge 浏览器（CDP），从聊天 emoji 面板中抓取喜欢的表情包
-
-要求：调用 scrape 时用户已打开 emoji 面板并切到 ❤️ 标签
+自动启动 Edge 浏览器，导航到抖音，自动打开表情面板并抓取喜欢的表情包
 """
 import asyncio
 import hashlib
@@ -20,22 +18,6 @@ logger = logging.getLogger(__name__)
 
 CDP_PORT = 9222
 
-# emoji 面板可能的容器选择器（按优先级）
-EMOJI_PANEL_SELECTORS = [
-    '[class*="emoji-panel"]',
-    '[class*="EmojiPanel"]',
-    '[class*="emoticon-panel"]',
-    '[class*="sticker-panel"]',
-    '[class*="StickerPanel"]',
-    '[class*="expression-panel"]',
-    '[class*="chat-emoji"]',
-    '[class*="ChatEmoji"]',
-    '[class*="im-emoji"]',
-    '[class*="ImEmoji"]',
-    '[data-e2e*="emoji"]',
-    '[data-e2e*="sticker"]',
-]
-
 
 class DouyinStickerScraper:
     def __init__(self, on_progress=None, on_sticker_found=None):
@@ -51,6 +33,7 @@ class DouyinStickerScraper:
         self.on_progress(msg)
 
     async def open_edge(self):
+        """启动 Edge 并连接"""
         import subprocess
 
         self._emit("正在启动 Edge 浏览器...")
@@ -69,13 +52,20 @@ class DouyinStickerScraper:
             self._emit("未找到 Edge 浏览器")
             return False
 
+        # 关闭已有 Edge 进程（否则无法绑定 CDP 端口）
+        self._emit("正在关闭已有 Edge...")
+        subprocess.run(["taskkill", "/F", "/IM", "msedge.exe"], capture_output=True, timeout=10)
+        await asyncio.sleep(2)
+
         subprocess.Popen([
             edge_exe,
             f"--remote-debugging-port={CDP_PORT}",
-            "https://www.douyin.com",
+            "--no-first-run",
+            "--no-default-browser-check",
+            config.DOUYIN_URL,
         ], creationflags=subprocess.DETACHED_PROCESS)
         self._emit("Edge 已启动，等待就绪...")
-        await asyncio.sleep(3)
+        await asyncio.sleep(6)
 
         self._pw = await async_playwright().start()
         self._browser = await self._pw.chromium.connect_over_cdp(
@@ -90,22 +80,48 @@ class DouyinStickerScraper:
             self._page = await ctx.new_page()
 
         self._emit("已连接到 Edge")
-        self._emit("请完成以下操作：")
-        self._emit("  1. 在抖音中打开任意聊天窗口")
-        self._emit("  2. 点击表情按钮，切到 ❤️ 标签")
-        self._emit("  3. 准备好后点击「2. 开始抓取」")
         return True
 
     async def scrape_from_chat_panel(self) -> list[Path]:
+        """抓取流程：等待登录 → 用户手动打开表情面板 → 抓取"""
         if not self._page:
             self._emit("未连接浏览器")
             return []
 
-        self._emit("正在抓取聊天面板中的表情包...")
+        page = self._page
 
+        # 1. 确保在抖音页面
+        if "douyin.com" not in page.url:
+            self._emit("正在打开抖音...")
+            await page.goto(config.DOUYIN_URL, wait_until="domcontentloaded", timeout=15000)
+            await asyncio.sleep(3)
+
+        # 2. 等待用户登录
+        self._emit("检查登录状态...")
+        if not await self._is_logged_in(page):
+            self._emit("请在浏览器中扫码登录抖音，登录后会自动继续...")
+            if not await self._wait_for_login(page, timeout=180):
+                self._emit("登录超时，请重新打开浏览器")
+                return []
+            self._emit("登录成功!")
+            await asyncio.sleep(2)
+
+        # 3. 引导用户手动操作（自动化的部分太脆弱）
+        self._emit("========================================")
+        self._emit("请在浏览器中手动完成以下操作：")
+        self._emit("  1. 打开任意聊天窗口（或私信）")
+        self._emit("  2. 点击输入框旁的表情按钮")
+        self._emit("  3. 切换到红心/收藏标签（能看到你收藏的表情包）")
+        self._emit("  4. 看到表情包后，回到这里点击「开始抓取」")
+        self._emit("========================================")
+        self._emit("（也可以点击「页面诊断」查看当前页面结构）")
+
+        # 等一下再尝试自动检测（如果用户已经打开了表情面板）
+        await asyncio.sleep(1)
         result = await self._extract_sticker_urls()
+
         if not result:
-            self._emit("未找到表情面板，请确保已打开 emoji 面板并切到 ❤️ 标签")
+            self._emit("未检测到表情面板。请手动打开后再次点击「开始抓取」")
             return []
 
         urls, debug_info = result
@@ -113,6 +129,207 @@ class DouyinStickerScraper:
         self._emit(f"共发现 {len(self.sticker_urls)} 个表情包 URL")
 
         return self.sticker_paths
+
+    async def _is_logged_in(self, page: Page) -> bool:
+        """检查是否已登录（通过页面内容判断）"""
+        try:
+            # 检查是否有登录弹窗/二维码
+            has_login_modal = await page.evaluate('''() => {
+                const els = document.querySelectorAll('[class*="login"], [class*="Login"], [class*="qrcode"], [class*="QRCode"]');
+                for (const el of els) {
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width > 100 && rect.height > 100) return true;
+                }
+                return false;
+            }''')
+            if has_login_modal:
+                return False
+
+            # 检查 URL 是否包含登录相关路径
+            if "login" in page.url or "passport" in page.url:
+                return False
+
+            # 检查是否有用户相关的 UI（头像等）
+            has_user_ui = await page.evaluate('''() => {
+                const avatar = document.querySelector('[class*="avatar"], [class*="Avatar"], [class*="user-info"]');
+                if (avatar) {
+                    const rect = avatar.getBoundingClientRect();
+                    return rect.width > 10 && rect.height > 10;
+                }
+                return false;
+            }''')
+            return has_user_ui
+        except Exception:
+            return False
+
+    async def _wait_for_login(self, page: Page, timeout: int = 180) -> bool:
+        """等待用户扫码登录"""
+        import time
+        start = time.time()
+        while time.time() - start < timeout:
+            if await self._is_logged_in(page):
+                return True
+            await asyncio.sleep(3)
+        return False
+
+    async def dump_page_structure(self) -> dict:
+        """dump 当前页面的 DOM 结构信息，用于调试选择器"""
+        if not self._page:
+            self._emit("未连接浏览器")
+            return {}
+
+        page = self._page
+        self._emit("正在分析页面结构...")
+
+        try:
+            result = await page.evaluate(r'''() => {
+                const info = {
+                    url: location.href,
+                    title: document.title,
+                    viewport: { w: innerWidth, h: innerHeight },
+                    // 1. 所有包含关键词的 class/id
+                    keywordElements: [],
+                    // 2. 高 z-index 弹窗
+                    popups: [],
+                    // 3. 所有按钮/可点击元素
+                    buttons: [],
+                    // 4. 所有图片（前50个）
+                    images: [],
+                    // 5. 输入框/编辑器
+                    inputs: [],
+                    // 6. Tab/标签元素
+                    tabs: [],
+                };
+
+                const keywords = ['emoji', 'sticker', 'emoticon', 'expression', 'emotion',
+                    'favorite', 'collect', 'heart', 'like', 'chat', 'message',
+                    'panel', 'dialog', 'popup', 'modal'];
+
+                // 收集所有元素
+                const all = document.querySelectorAll('*');
+                for (let i = 0; i < all.length; i++) {
+                    const el = all[i];
+                    const cls = el.className || '';
+                    const id = el.id || '';
+                    const clsStr = typeof cls === 'string' ? cls : cls.baseVal || '';
+                    const combined = (clsStr + ' ' + id).toLowerCase();
+
+                    // 关键词匹配
+                    for (const kw of keywords) {
+                        if (combined.includes(kw)) {
+                            const rect = el.getBoundingClientRect();
+                            info.keywordElements.push({
+                                tag: el.tagName.toLowerCase(),
+                                class: clsStr.slice(0, 100),
+                                id: id,
+                                keyword: kw,
+                                visible: rect.width > 0 && rect.height > 0,
+                                rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+                                text: (el.textContent || '').trim().slice(0, 50),
+                            });
+                            break;
+                        }
+                    }
+
+                    // 高 z-index 弹窗
+                    const style = getComputedStyle(el);
+                    const z = parseInt(style.zIndex) || 0;
+                    if (z > 50 && (style.position === 'fixed' || style.position === 'absolute')) {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 80 && rect.height > 80) {
+                            info.popups.push({
+                                tag: el.tagName.toLowerCase(),
+                                class: (clsStr || '').slice(0, 100),
+                                z: z,
+                                rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+                                childImgCount: el.querySelectorAll('img').length,
+                            });
+                        }
+                    }
+
+                    // 按钮
+                    if (el.tagName === 'BUTTON' || el.getAttribute('role') === 'button' || el.onclick) {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0 && rect.height > 0) {
+                            const ariaLabel = el.getAttribute('aria-label') || '';
+                            info.buttons.push({
+                                tag: el.tagName.toLowerCase(),
+                                class: (clsStr || '').slice(0, 80),
+                                ariaLabel: ariaLabel,
+                                text: (el.textContent || '').trim().slice(0, 30),
+                                rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+                            });
+                        }
+                    }
+
+                    // 图片
+                    if (el.tagName === 'IMG' && info.images.length < 50) {
+                        const src = el.src || el.getAttribute('src') || '';
+                        if (src.startsWith('http')) {
+                            const rect = el.getBoundingClientRect();
+                            info.images.push({
+                                src: src.slice(0, 200),
+                                w: el.naturalWidth || el.width || 0,
+                                h: el.naturalHeight || el.height || 0,
+                                rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+                            });
+                        }
+                    }
+
+                    // 输入框
+                    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.getAttribute('contenteditable') === 'true') {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0) {
+                            info.inputs.push({
+                                tag: el.tagName.toLowerCase(),
+                                class: (clsStr || '').slice(0, 80),
+                                placeholder: el.getAttribute('placeholder') || '',
+                                contentEditable: el.getAttribute('contenteditable'),
+                                rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+                            });
+                        }
+                    }
+
+                    // Tab 标签
+                    if (el.getAttribute('role') === 'tab' || (clsStr || '').toLowerCase().includes('tab')) {
+                        const rect = el.getBoundingClientRect();
+                        if (rect.width > 0) {
+                            info.tabs.push({
+                                tag: el.tagName.toLowerCase(),
+                                class: (clsStr || '').slice(0, 80),
+                                text: (el.textContent || '').trim().slice(0, 30),
+                                ariaSelected: el.getAttribute('aria-selected'),
+                                rect: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
+                            });
+                        }
+                    }
+                }
+
+                return info;
+            }''')
+
+            # 保存到文件
+            import json
+            dump_path = config.PROJECT_DIR / "page_dump.json"
+            with open(dump_path, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+
+            self._emit(f"页面: {result.get('title', '')}")
+            self._emit(f"URL: {result.get('url', '')}")
+            self._emit(f"视口: {result.get('viewport', {})}")
+            self._emit(f"关键词元素: {len(result.get('keywordElements', []))} 个")
+            self._emit(f"弹窗: {len(result.get('popups', []))} 个")
+            self._emit(f"按钮: {len(result.get('buttons', []))} 个")
+            self._emit(f"图片: {len(result.get('images', []))} 个")
+            self._emit(f"输入框: {len(result.get('inputs', []))} 个")
+            self._emit(f"标签: {len(result.get('tabs', []))} 个")
+            self._emit(f"诊断结果已保存: {dump_path}")
+
+            return result
+
+        except Exception as e:
+            self._emit(f"诊断出错: {e}")
+            return {}
 
     async def _extract_sticker_urls(self) -> tuple[list[str], dict]:
         """从页面提取表情包 URL，返回 (urls, debug_info)"""
