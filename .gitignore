@@ -6,6 +6,7 @@ __pycache__/
 dist/
 build/
 .eggs/
+*.spec
 
 # Virtual environment
 venv/
@@ -24,8 +25,13 @@ env/
 # Debug output
 page_dump.json
 
-# Downloaded stickers (runtime data)
+# Downloaded & converted stickers (runtime data)
 downloaded_stickers/
+converted_stickers/
+sticker_history.json
+
+# Isolated Edge browser profile (runtime session/cookies)
+edge_profile/
 
 # Debug screenshots
 debug/

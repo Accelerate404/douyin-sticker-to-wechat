@@ -1,67 +1,71 @@
 # 抖音表情包 → 微信我的表情
 
-将抖音「喜欢的表情包」自动转存到微信「我的表情」。
+将抖音「喜欢的表情包」按需增量抓取、高帧率优化转换并直接发送到**电脑版微信**聊天窗口，右键即可保存到「我的表情」（无需连接手机、无需手机权限）。
 
-## 工作原理
+## 快速开始
 
-微信没有直接导入表情包的 API，本工具的策略是：
+### 方式一：直接下载 EXE（即开即用，推荐）
 
-1. 通过 Playwright CDP 连接 Edge 浏览器，从抖音网页版抓取喜欢的表情包
-2. 下载 WebP/GIF 格式图片，自动转换为微信支持的 GIF 格式
-3. 压缩至微信自定义表情要求（≤500KB, ≤320×320）
-4. 通过 MTP（USB 文件传输）推送到手机 `DCIM/stickers/`
-5. 用户在微信中手动添加：聊天 → 表情 → 红心 → 添加单个表情 → 从相册选择
+无需安装 Python 或任何依赖：
 
-## 安装
+1. 前往本仓库的 [Releases 页面](https://github.com/Accelerate404/douyin-sticker-to-wechat/releases) 下载 `DouyinStickerToWeChat.exe`
+2. 放到任意空文件夹中，**双击运行**即可（需本机已安装 Windows 自带的 Microsoft Edge 与电脑版微信）
+3. 下载的表情包、转换成品、历史记录和独立浏览器登录状态会自动保存在 `.exe` 同级目录下
+
+### 方式二：源码运行
 
 ```bash
 pip install -r requirements.txt
-playwright install chromium
-```
-
-## 使用方法
-
-```bash
 python main.py
 ```
 
-### 操作步骤
+> 仅依赖本机已安装的 Microsoft Edge 浏览器，无需额外执行 `playwright install chromium`。
 
-1. **打开浏览器** — 自动启动 Edge 并连接抖音网页版
-2. **开始抓取** — 检查登录状态，等待扫码登录后，在浏览器中手动打开聊天表情面板（红心标签），回到程序点击抓取
-3. **推送到手机** — 自动转换格式 + 压缩，通过 USB MTP 复制到手机
-4. **微信添加** — 在微信中逐个添加到表情（微信限制每次只能选一张）
+### 自行打包 EXE
 
-也可以点击「手动选择本地表情包」导入已有图片，或点击「页面诊断」分析当前页面结构。
+```bash
+pip install pyinstaller
+python build.py
+```
+
+打包产物位于 `dist/DouyinStickerToWeChat.exe`（推送 `v*` 标签到 GitHub 也会通过 GitHub Actions 自动构建并发布 Release）。
+
+## 操作步骤
+
+1. **打开浏览器** — 启动纯净独立 Edge 实例并打开抖音网页版（禁用同步与插件，首次扫码登录，后续自动保留抖音登录态）
+2. **设置抓取参数 & 开始抓取**：
+   - 可设置 **抓取上限**（`0` 表示全部，也可填 `20` / `50` 只抓指定数量）
+   - 默认勾选 **「跳过已抓取/已发送」**，以前抓过的不会重复下载或重复发送
+   - 在抖音中打开任意聊天窗口 → 点击表情按钮 → 切换到红心/收藏表情 → 点击「开始抓取」
+3. **发送到电脑微信**：
+   - 打开电脑版微信，进入 **「文件传输助手」**（推荐）或任意聊天窗口
+   - 点击 **「3. 发送到电脑微信」**，程序会自动转换并逐个发送表情到聊天窗口（可随时点「停止」或按 `ESC` 中断）
+4. **保存到微信表情** — 在电脑版微信聊天窗口中，右键刚刚发出的表情 → 点击 **「添加到表情」** 即可同步到手机和电脑微信的「我的表情」
+
+## 工作原理
+
+1. **纯净独立 Edge 抓取**：通过 Playwright CDP 连接独立配置目录（`edge_profile/`），结合网络 JSON 拦截与表情面板二维网格 DOM 识别 + 自动滚动抓取，未打开表情面板时主动弹窗拦截，绝不误抓视频封面。
+2. **统一输出高兼容透明 GIF**：
+   - 依据文件魔数识别真实图片格式
+   - 静态图与动图统一转为透明/高清 **GIF**（全局共享调色板 + 保持总时长的渐进压缩阶梯），确保电脑版微信右键均支持「添加到表情」
+   - 支持 **高清模式 (≤950KB, 推荐)** 与 **兼容模式 (≤500KB)**
+3. **纯 Win32 API 电脑微信直发**：通过 `ctypes` 直接调用 Windows `CF_HDROP` 剪贴板与窗口聚焦接口发送文件，零外部系统工具依赖，也无需手机连接或开启权限。
 
 ## 目录结构
 
 ```
-├── main.py               # GUI 主程序入口
-├── config.py             # 配置（路径、超时、请求头等）
-├── douyin_scraper.py     # 抖音表情包抓取（Playwright CDP + 页面诊断）
-├── sticker_converter.py  # 图片格式转换与压缩（WebP → GIF）
-├── adb_push.py           # MTP 文件推送到手机（PowerShell COM）
-├── wechat_importer.py    # 微信 PC 端发送（旧方案，保留备用）
-├── capture_templates.py  # 模板截图（废弃）
-├── diagnose.py           # DOM 调试工具
-├── requirements.txt      # Python 依赖
-└── downloaded_stickers/  # 下载的表情包（运行时生成）
+├── main.py                       # GUI 主程序入口
+├── config.py                     # 路径、压缩预设与增量历史管理
+├── douyin_scraper.py             # 抖音表情抓取（纯净 Edge CDP + 增量跳过 + 数量限制）
+├── sticker_converter.py          # 全局调色板透明 GIF 转换与高帧率压缩
+├── wechat_sender.py              # 电脑版微信 Win32 API 自动粘贴发送
+├── tests/test_core.py            # 核心逻辑自动化单元测试
+├── build.py                      # PyInstaller 一键打包脚本
+├── .github/workflows/release.yml # GitHub Actions 自动打包发布工作流
+├── requirements.txt              # Python 依赖（playwright, httpx, Pillow）
+├── LICENSE                       # MIT 开源协议
+├── downloaded_stickers/          # 下载的原始表情包（运行时生成）
+├── converted_stickers/           # 转换优化后的 GIF 成品（运行时生成）
+├── sticker_history.json          # 已抓取/已发送哈希记录（运行时生成）
+└── edge_profile/                 # 独立 Edge 登录状态目录（运行时生成）
 ```
-
-## 技术细节
-
-- **浏览器连接**: 通过 Chrome DevTools Protocol (CDP) 连接 Edge，自动管理启动和关闭
-- **DOM 识别**: 多策略定位抖音表情面板（已知选择器 → 弹窗分析 → CDN 特征匹配）
-- **页面诊断**: dump 页面 DOM 结构到 `page_dump.json`，快速定位正确的选择器
-- **格式转换**: WebP → GIF（微信自定义表情仅支持 GIF 格式）
-- **GIF 压缩**: 优先降低色彩质量保帧率，必要时保守抽帧（保持播放速度）
-- **MTP 推送**: 通过 Windows Shell COM + PowerShell 实现可靠的 MTP 文件复制
-
-## 注意事项
-
-- 需要安装 Edge 浏览器（`playwright install chromium` 仅用于辅助）
-- 手机通过 USB 连接电脑，选择「文件传输」模式（不需要开发者模式）
-- 微信添加表情时每次只能选一张，100 个表情约需 15-20 分钟手动操作
-- 抖音前端 class 名频繁变化，抓取失败时使用「页面诊断」更新选择器
-- `douyin_cookies.json` 包含登录凭证，请勿泄露
