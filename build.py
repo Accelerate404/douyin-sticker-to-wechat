@@ -6,6 +6,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 ROOT = Path(__file__).parent
 
 
@@ -26,12 +31,12 @@ def build():
         "playwright.async_api",
         str(ROOT / "main.py"),
     ]
-    print("正在打包:", " ".join(cmd))
+    print("Building EXE:", " ".join(cmd), flush=True)
     subprocess.run(cmd, cwd=str(ROOT), check=True)
     exe_path = ROOT / "dist" / "DouyinStickerToWeChat.exe"
     if exe_path.exists():
         size_mb = exe_path.stat().st_size / (1024 * 1024)
-        print(f"\n打包成功: {exe_path} ({size_mb:.1f} MB)")
+        print(f"\nBuild succeeded: {exe_path} ({size_mb:.1f} MB)", flush=True)
 
 
 if __name__ == "__main__":
